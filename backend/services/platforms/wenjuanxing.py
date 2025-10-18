@@ -9,13 +9,21 @@ from backend.services.platforms.base import BasePlatform, PlatformType
 
 class WenjuanxingPlatform(BasePlatform):
     """问卷星平台适配器"""
-    
+
     @property
     def platform_name(self) -> PlatformType:
         return PlatformType.WENJUANXING
-    
+
+    def _clean_url(self, url: str) -> str:
+        """清理URL，移除锚点等无关内容"""
+        # 移除 # 及其后面的内容
+        clean_url = url.split('#')[0].strip()
+        # 移除尾部空格
+        return clean_url
+
     async def parse_url(self, url: str) -> Dict[str, Any]:
         """解析问卷URL"""
+        url = self._clean_url(url)
         if not await self.validate_url(url):
             raise ValueError("无效的URL")
         
@@ -48,6 +56,7 @@ class WenjuanxingPlatform(BasePlatform):
     
     async def extract_questions(self, url: str) -> tuple[List[Question], Dict[str, Any]]:
         """提取题目列表"""
+        url = self._clean_url(url)
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
@@ -75,6 +84,7 @@ class WenjuanxingPlatform(BasePlatform):
     
     async def submit_answers(self, url: str, answers: Dict[str, Any]) -> Dict[str, Any]:
         """提交答案"""
+        url = self._clean_url(url)
         async with async_playwright() as p:
             browser = await p.chromium.launch(headless=True)
             try:
@@ -221,9 +231,26 @@ class WenjuanxingPlatform(BasePlatform):
                 question = await self._parse_question_element(field_elem, index)
                 if question:
                     questions.append(question)
+                    log.debug(f"成功解析第 {index} 题: {question.type.value} - {question.content[:30]}")
             except Exception as e:
-                log.warning(f"解析第 {index} 题失败: {e}")
-                continue
+                log.error(f"解析第 {index} 题失败: {e}")
+                # 即使解析失败，也尝试创建一个基本的题目对象
+                try:
+                    question_id = await field_elem.get_attribute("id") or f"div{index}"
+                    fallback_question = Question(
+                        id=self.normalize_question_id(question_id),
+                        type=QuestionType.FILL_BLANK,  # 默认为填空题
+                        content=f"题目{index}（解析失败，请手动检查）",
+                        options=None,
+                        order=index,
+                        required=True,
+                        platform_data={"parse_error": str(e)},
+                    )
+                    questions.append(fallback_question)
+                    log.warning(f"第 {index} 题使用降级方案")
+                except:
+                    log.error(f"第 {index} 题完全解析失败，跳过")
+                    continue
         
         return questions
     
@@ -231,12 +258,27 @@ class WenjuanxingPlatform(BasePlatform):
         """解析单个题目元素"""
         # 获取题目ID
         question_id = await field_elem.get_attribute("id") or f"q{order}"
-        
-        # 获取题目内容
-        title_elem = field_elem.locator(".field-label, .title")
-        content = await title_elem.inner_text() if await title_elem.count() > 0 else f"题目{order}"
-        
-        # 清理题目内容（移除题号等）
+
+        # 获取题目内容 - 优先使用 .field-label 下的 .topichtml
+        try:
+            # 方法1: 查找 .field-label > .topichtml（最精确）
+            topic_html = field_elem.locator(".field-label > .topichtml").first
+            if await topic_html.count() > 0:
+                content = await topic_html.inner_text()
+            else:
+                # 方法2: 查找直接子元素 .field-label
+                field_label = field_elem.locator("> .field-label").first
+                if await field_label.count() > 0:
+                    content = await field_label.inner_text()
+                else:
+                    # 方法3: 使用默认内容
+                    content = f"题目{order}"
+        except Exception as e:
+            log.debug(f"提取题目内容失败: {e}, 使用默认值")
+            content = f"题目{order}"
+
+        # 清理题目内容（移除题号、星号等）
+        content = re.sub(r'^\*+\s*', '', content).strip()  # 移除开头的星号
         content = re.sub(r'^\d+[\.\、\s]+', '', content).strip()
         content = re.sub(r'^\[\s*[必选单多判填]\s*\]\s*', '', content).strip()
         
@@ -264,12 +306,81 @@ class WenjuanxingPlatform(BasePlatform):
     
     async def _detect_question_type(self, field_elem, content: str) -> tuple[QuestionType, list]:
         """检测题目类型和选项"""
-        # 检查是否有选项容器
-        ui_radio_elements = await field_elem.locator(".ui-radio").all()
-        ui_checkbox_elements = await field_elem.locator(".ui-checkbox").all()
-        
+        try:
+            # 获取题目的 type 属性
+            field_type = await field_elem.get_attribute("type") or ""
+
+            log.debug(f"题目类型检测: type={field_type}, content={content[:30]}")
+
+            # 检查特殊标记
+            is_gapfill = await field_elem.get_attribute("gapfill") == "1"
+
+            # 检查是否有选项容器
+            ui_radio_elements = await field_elem.locator(".ui-radio").all()
+            ui_checkbox_elements = await field_elem.locator(".ui-checkbox").all()
+
+            # 检查是否有 textarea（简答题）
+            textarea_elements = await field_elem.locator("textarea").all()
+
+            # 检查是否有 select（下拉题）
+            select_elements = await field_elem.locator("select").all()
+
+            # 检查是否有表格结构（矩阵题）
+            table_elements = await field_elem.locator("table.matrix-rating").all()
+
+            # 1. 多项填空题 (gapfill="1")
+            if is_gapfill:
+                log.debug("识别为多项填空题")
+                return QuestionType.GAP_FILL, None
+
+            # 2. 多项简答题 (type="34")
+            if field_type == "34" and table_elements:
+                log.debug("识别为多项简答题")
+                return QuestionType.MULTIPLE_ESSAY, None
+
+            # 3. 矩阵填空题 (type="9" with table)
+            if field_type == "9" and table_elements:
+                log.debug("识别为矩阵填空题")
+                return QuestionType.MATRIX_FILL, None
+        except Exception as e:
+            log.error(f"题型检测出错: {e}")
+            raise
+
+        # 4. 简答题 (type="2")
+        if field_type == "2" and textarea_elements and not table_elements:
+            return QuestionType.ESSAY, None
+
+        # 5. 下拉选择题 (type="7")
+        if field_type == "7" and select_elements:
+            # 提取下拉选项
+            options = []
+            for select_elem in select_elements:
+                option_elements = await select_elem.locator("option").all()
+                for option_elem in option_elements:
+                    value = await option_elem.get_attribute("value")
+                    # 跳过"请选择"等默认选项
+                    if value and value != "-2":
+                        option_text = await option_elem.inner_text()
+                        if option_text and option_text.strip():
+                            options.append(option_text.strip())
+            return QuestionType.DROPDOWN, options if options else None
+
+        # 6. 级联下拉 (verify="多级下拉")
+        input_elements = await field_elem.locator("input[verify='多级下拉']").all()
+        if input_elements:
+            # 级联下拉的选项是动态加载的，无法静态解析
+            # 返回一个提示性的选项列表
+            placeholder_options = ["(级联下拉 - 选项动态加载)"]
+            log.debug("识别为级联下拉题，选项需动态加载")
+            return QuestionType.CASCADE_DROPDOWN, placeholder_options
+
+        # 7. 单选题/判断题/多选题（原有逻辑）
         if not ui_radio_elements and not ui_checkbox_elements:
-            # 没有选项，是填空题
+            # 没有选项，检查是否是普通填空题
+            text_input = await field_elem.locator("input[type='text'], textarea").all()
+            if text_input:
+                return QuestionType.FILL_BLANK, None
+            # 其他情况也当作填空题
             return QuestionType.FILL_BLANK, None
         
         # 提取选项文本
@@ -310,16 +421,18 @@ class WenjuanxingPlatform(BasePlatform):
         # 判断题型
         if ui_radio_elements:
             # 单选题或判断题
-            if len(options) == 2 and any(
-                kw in "".join(options).lower() 
+            # 检查是否有 ispanduan 属性
+            is_panduan = await field_elem.get_attribute("ispanduan") == "1"
+            if is_panduan or (len(options) == 2 and any(
+                kw in "".join(options).lower()
                 for kw in ["正确", "错误", "对", "错", "是", "否", "true", "false", "yes", "no"]
-            ):
+            )):
                 return QuestionType.TRUE_FALSE, options
             else:
                 return QuestionType.SINGLE_CHOICE, options
         elif ui_checkbox_elements:
             return QuestionType.MULTIPLE_CHOICE, options
-        
+
         return QuestionType.FILL_BLANK, None
     
     async def _fill_answer(self, page: Page, question_id: str, answer_content: Any):
@@ -328,21 +441,45 @@ class WenjuanxingPlatform(BasePlatform):
             # 问卷星使用的是字段ID，如 div1, div2，但input的name是q1, q2
             # 需要转换ID格式
             input_name = question_id.replace("div", "q")
-            
-            # 通过input的name属性定位字段
-            # 先尝试找到包含该name的input
-            input_elem = page.locator(f"input[name='{input_name}']").first
-            
-            if not await input_elem.count():
-                log.warning(f"未找到题目: {question_id} (input name: {input_name})")
+
+            # 获取field容器
+            field = page.locator(f"#{question_id}").first
+            if not await field.count():
+                log.warning(f"未找到题目容器: {question_id}")
                 return
-            
-            # 获取input所在的field容器
-            field = input_elem.locator("xpath=ancestor::div[contains(@class, 'field')]").first
-            
-            # 判断题型并填写
-            if await field.locator("input[type='radio']").count() > 0:
-                # 单选题
+
+            # 获取题目类型
+            field_type = await field.get_attribute("type") or ""
+            is_gapfill = await field.get_attribute("gapfill") == "1"
+
+            # 根据题型调用不同的填写方法
+            # 1. 多项填空题
+            if is_gapfill:
+                await self._fill_gap_fill(page, input_name, answer_content)
+
+            # 2. 多项简答题 (type="34")
+            elif field_type == "34":
+                await self._fill_multiple_essay(page, input_name, answer_content)
+
+            # 3. 矩阵填空题 (type="9")
+            elif field_type == "9":
+                await self._fill_matrix(page, input_name, answer_content)
+
+            # 4. 简答题 (type="2")
+            elif field_type == "2":
+                await self._fill_essay(page, input_name, answer_content)
+
+            # 5. 下拉选择 (type="7")
+            elif field_type == "7":
+                await self._fill_dropdown(page, input_name, answer_content)
+
+            # 6. 级联下拉
+            elif await field.locator("input[verify='多级下拉']").count() > 0:
+                await self._fill_cascade(page, input_name, answer_content)
+
+            # 7. 原有题型
+            elif await field.locator("input[type='radio']").count() > 0:
+                # 单选题/判断题
                 await self._fill_radio(page, input_name, answer_content)
             elif await field.locator("input[type='checkbox']").count() > 0:
                 # 多选题
@@ -350,7 +487,9 @@ class WenjuanxingPlatform(BasePlatform):
             elif await field.locator("input[type='text'], textarea").count() > 0:
                 # 填空题
                 await self._fill_text(page, input_name, answer_content)
-            
+            else:
+                log.warning(f"未知题型: {question_id}")
+
         except Exception as e:
             log.error(f"填写题目 {question_id} 失败: {e}")
     
@@ -711,7 +850,7 @@ class WenjuanxingPlatform(BasePlatform):
             success_elem = page.locator(".success-message, .alert-success, .tip-success, .success-tip")
             if await success_elem.count() > 0:
                 return await success_elem.first.inner_text()
-            
+
             # 检查页面标题是否包含"成功"、"完成"等字样
             page_text = await page.content()
             if any(kw in page_text for kw in ["提交成功", "已完成", "感谢您的参与"]):
@@ -719,4 +858,165 @@ class WenjuanxingPlatform(BasePlatform):
         except:
             pass
         return ""
+
+    async def _fill_essay(self, page: Page, input_name: str, answer: str):
+        """填写简答题"""
+        try:
+            textarea = page.locator(f"textarea[name='{input_name}']").first
+            if await textarea.count() > 0:
+                await textarea.fill(str(answer), timeout=5000)
+                log.info(f"✓ 已填写简答题: {input_name} = \"{answer[:80]}{'...' if len(str(answer)) > 80 else ''}\"")
+            else:
+                log.warning(f"❌ 未找到简答题输入框: {input_name}")
+        except Exception as e:
+            log.error(f"填写简答题失败: {e}")
+
+    async def _fill_matrix(self, page: Page, input_name: str, answer: Any):
+        """填写矩阵填空题"""
+        try:
+            # 答案应该是字典格式: {"q2_0": "张三", "q2_1": "技术部"}
+            if not isinstance(answer, dict):
+                log.warning(f"矩阵填空题答案格式错误，应为字典: {type(answer).__name__}")
+                return
+
+            filled_count = 0
+            for sub_name, sub_answer in answer.items():
+                # sub_name 可能是 "q2_0", "q2_1" 等
+                textarea = page.locator(f"textarea[name='{sub_name}'], input[name='{sub_name}']").first
+                if await textarea.count() > 0:
+                    await textarea.fill(str(sub_answer), timeout=5000)
+                    filled_count += 1
+                    log.info(f"✓ 已填写矩阵子项: {sub_name} = \"{str(sub_answer)[:50]}\"")
+                else:
+                    log.warning(f"❌ 未找到矩阵子项输入框: {sub_name}")
+
+            log.info(f"✓ 矩阵填空题 {input_name} 共填写 {filled_count} 个子项")
+        except Exception as e:
+            log.error(f"填写矩阵填空题失败: {e}")
+
+    async def _fill_multiple_essay(self, page: Page, input_name: str, answer: Any):
+        """填写多项简答题"""
+        try:
+            # 复用矩阵填空的逻辑，因为结构类似
+            await self._fill_matrix(page, input_name, answer)
+        except Exception as e:
+            log.error(f"填写多项简答题失败: {e}")
+
+    async def _fill_dropdown(self, page: Page, input_name: str, answer: Any):
+        """填写下拉选择题"""
+        try:
+            # 解析答案索引
+            answer_index = None
+            if isinstance(answer, int):
+                answer_index = answer
+            elif isinstance(answer, str) and answer.strip().isdigit():
+                answer_index = int(answer.strip())
+
+            if answer_index is None:
+                log.warning(f"下拉选择题答案格式错误: {answer}")
+                return
+
+            # 问卷星的下拉框value从1开始（0通常是"请选择"）
+            value = str(answer_index + 1)
+
+            # 使用 select2 插件的选择方法
+            select = page.locator(f"select[name='{input_name}']").first
+            if await select.count() > 0:
+                # 检查是否使用了 select2 插件
+                select2_container = page.locator(f"select[name='{input_name}'] + .select2").first
+                if await select2_container.count() > 0:
+                    # 使用 select2 的方式选择
+                    # 点击 select2 容器打开下拉框
+                    await select2_container.click(timeout=3000)
+                    await page.wait_for_timeout(300)
+                    # 选择对应的选项
+                    option = page.locator(f".select2-results__option[data-select2-id]").nth(answer_index)
+                    if await option.count() > 0:
+                        await option.click(timeout=3000)
+                        log.info(f"✓ 已选择下拉选项(select2): {input_name} -> 选项{value}")
+                    else:
+                        # 备选方案：直接设置select的value
+                        await select.select_option(value, timeout=3000)
+                        log.info(f"✓ 已选择下拉选项(fallback): {input_name} -> 选项{value}")
+                else:
+                    # 原生 select
+                    await select.select_option(value, timeout=3000)
+                    log.info(f"✓ 已选择下拉选项: {input_name} -> 选项{value}")
+            else:
+                log.warning(f"❌ 未找到下拉选择框: {input_name}")
+        except Exception as e:
+            log.error(f"填写下拉选择题失败: {e}")
+
+    async def _fill_gap_fill(self, page: Page, input_name: str, answer: Any):
+        """填写多项填空题（段落中嵌入的多个填空）"""
+        try:
+            # 答案可以是字典 {"q10_1": "答案1", "q10_2": "答案2"}
+            # 或列表 ["答案1", "答案2"]
+            if isinstance(answer, dict):
+                for sub_name, sub_answer in answer.items():
+                    # 尝试找到对应的输入框
+                    text_input = page.locator(f"input[name='{sub_name}']").first
+                    if await text_input.count() > 0:
+                        await text_input.fill(str(sub_answer), timeout=5000)
+                        log.info(f"✓ 已填写多项填空子项: {sub_name} = \"{str(sub_answer)[:50]}\"")
+                    else:
+                        # 尝试 contenteditable 元素
+                        label = page.locator(f"label.textEdit").nth(int(sub_name.split('_')[-1]) - 1)
+                        if await label.count() > 0:
+                            span = label.locator("span.textCont").first
+                            if await span.count() > 0:
+                                await span.click(timeout=3000)
+                                await span.fill(str(sub_answer), timeout=5000)
+                                log.info(f"✓ 已填写多项填空(contenteditable): {sub_name} = \"{str(sub_answer)[:50]}\"")
+                        else:
+                            log.warning(f"❌ 未找到多项填空子项: {sub_name}")
+
+            elif isinstance(answer, list):
+                for idx, sub_answer in enumerate(answer, start=1):
+                    sub_name = f"{input_name}_{idx}"
+                    text_input = page.locator(f"input[name='{sub_name}']").first
+                    if await text_input.count() > 0:
+                        await text_input.fill(str(sub_answer), timeout=5000)
+                        log.info(f"✓ 已填写多项填空第{idx}空: \"{str(sub_answer)[:50]}\"")
+                    else:
+                        # 尝试 contenteditable
+                        label = page.locator(f"label.textEdit").nth(idx - 1)
+                        if await label.count() > 0:
+                            span = label.locator("span.textCont").first
+                            if await span.count() > 0:
+                                await span.click(timeout=3000)
+                                await span.fill(str(sub_answer), timeout=5000)
+                                log.info(f"✓ 已填写多项填空(contenteditable)第{idx}空: \"{str(sub_answer)[:50]}\"")
+                        else:
+                            log.warning(f"❌ 未找到多项填空第{idx}空")
+            else:
+                log.warning(f"多项填空题答案格式错误: {type(answer).__name__}")
+
+        except Exception as e:
+            log.error(f"填写多项填空题失败: {e}")
+
+    async def _fill_cascade(self, page: Page, input_name: str, answer: str):
+        """填写级联下拉题"""
+        try:
+            # 级联下拉通常需要点击输入框，然后从弹出的选择器中选择
+            # 这里提供基础实现，具体逻辑可能需要根据实际页面调整
+            cascade_input = page.locator(f"input[name='{input_name}']").first
+            if await cascade_input.count() > 0:
+                # 点击输入框打开级联选择器
+                await cascade_input.click(timeout=3000)
+                await page.wait_for_timeout(500)
+
+                # 级联下拉的选择逻辑比较复杂，这里只做简单处理
+                # 将答案直接填入输入框（某些情况下可能有效）
+                await cascade_input.fill(str(answer), timeout=5000)
+                log.info(f"✓ 已填写级联下拉: {input_name} = \"{answer[:80]}\"")
+
+                # 如果需要点击确认按钮
+                confirm_btn = page.locator(".weui-picker__action:has-text('确定')").first
+                if await confirm_btn.count() > 0:
+                    await confirm_btn.click(timeout=3000)
+            else:
+                log.warning(f"❌ 未找到级联下拉输入框: {input_name}")
+        except Exception as e:
+            log.error(f"填写级联下拉题失败: {e}")
 

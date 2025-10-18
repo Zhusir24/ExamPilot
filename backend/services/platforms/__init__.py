@@ -13,10 +13,13 @@ PLATFORM_REGISTRY = {
 
 def get_platform(url: str) -> BasePlatform:
     """根据URL获取平台适配器"""
+    # 清理URL：移除锚点和查询参数中的无关内容
+    clean_url = url.split('#')[0].strip()
+
     # 问卷星的多个域名
-    wjx_domains = ["wjx.cn", "wjx.top", "wenjuan.com", "sojump.com", "wenjuan.in"]
-    if any(domain in url for domain in wjx_domains):
+    wjx_domains = ["wjx.cn", "wjx.com", "wjx.top", "wenjuan.com", "sojump.com", "wenjuan.in"]
+    if any(domain in clean_url for domain in wjx_domains):
         return WenjuanxingPlatform()
-    
-    raise ValueError(f"不支持的问卷平台: {url}")
+
+    raise ValueError(f"不支持的问卷平台: {clean_url}")
 

@@ -49,15 +49,18 @@ async def parse_questionnaire(
 ):
     """
     解析问卷URL
-    
+
     1. 检测平台
     2. 提取题目
     3. 保存到数据库
     """
     try:
+        # 清理URL：移除锚点等无关内容
+        clean_url = request.url.split('#')[0].strip()
+
         # 检查是否已经解析过
         result = await db.execute(
-            select(Questionnaire).where(Questionnaire.url == request.url)
+            select(Questionnaire).where(Questionnaire.url == clean_url)
         )
         existing = result.scalar_one_or_none()
         
@@ -95,18 +98,18 @@ async def parse_questionnaire(
             )
         
         # 获取平台适配器
-        platform = get_platform(request.url)
-        
+        platform = get_platform(clean_url)
+
         # 提取题目
-        log.info(f"开始解析问卷: {request.url}")
-        questions, metadata = await platform.extract_questions(request.url)
+        log.info(f"开始解析问卷: {clean_url}")
+        questions, metadata = await platform.extract_questions(clean_url)
         
         # 检测模板类型
         template_type = metadata.get("template_type", "测评")
         
         # 保存问卷
         questionnaire = Questionnaire(
-            url=request.url,
+            url=clean_url,
             platform=platform.platform_name.value,
             template_type=template_type,
             title=metadata.get("title", "未命名问卷"),
