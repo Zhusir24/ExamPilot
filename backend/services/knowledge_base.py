@@ -1,5 +1,7 @@
 """知识库管理服务"""
 import numpy as np
+import markdown
+from bs4 import BeautifulSoup
 from typing import List, Dict, Any, Optional, Tuple
 from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,7 +12,7 @@ from backend.services.llm_service import EmbeddingService, RerankService
 
 class KnowledgeBaseService:
     """知识库服务类"""
-    
+
     def __init__(
         self,
         embedding_service: EmbeddingService,
@@ -18,6 +20,48 @@ class KnowledgeBaseService:
     ):
         self.embedding_service = embedding_service
         self.rerank_service = rerank_service
+
+    def _parse_markdown_to_text(self, markdown_content: str) -> str:
+        """
+        将 Markdown 内容解析为纯文本
+
+        Args:
+            markdown_content: Markdown 格式的文本
+
+        Returns:
+            解析后的纯文本（去除所有格式标记）
+        """
+        try:
+            # 1. 使用 markdown 库将 markdown 转换为 HTML
+            html = markdown.markdown(
+                markdown_content,
+                extensions=['extra', 'codehilite', 'tables', 'fenced_code']
+            )
+
+            # 2. 使用 BeautifulSoup 从 HTML 中提取纯文本
+            soup = BeautifulSoup(html, 'html.parser')
+
+            # 提取文本，自动处理标签之间的空白
+            text = soup.get_text(separator='\n', strip=True)
+
+            # 3. 清理多余的空行
+            lines = [line.strip() for line in text.split('\n')]
+            # 保留非空行，并合并连续的空行为单个空行
+            cleaned_lines = []
+            prev_empty = False
+            for line in lines:
+                if line:
+                    cleaned_lines.append(line)
+                    prev_empty = False
+                elif not prev_empty:
+                    cleaned_lines.append('')
+                    prev_empty = True
+
+            return '\n'.join(cleaned_lines).strip()
+
+        except Exception as e:
+            log.warning(f"Markdown 解析失败，将使用原始内容: {e}")
+            return markdown_content
     
     async def add_document(
         self,
@@ -32,7 +76,7 @@ class KnowledgeBaseService:
     ) -> KnowledgeDocument:
         """
         添加文档到知识库
-        
+
         Args:
             session: 数据库会话
             title: 文档标题
@@ -42,22 +86,48 @@ class KnowledgeBaseService:
             chunk_size: 分块大小（字符数）
             chunk_overlap: 分块重叠大小
             meta_data: 元数据
-            
+
         Returns:
             文档对象
         """
         log.info(f"========== 开始添加文档: {title} ==========")
         log.info(f"内容长度: {len(content)} 字符, 分块大小: {chunk_size}, 重叠: {chunk_overlap}")
-        
+
+        # 初始化元数据
+        if meta_data is None:
+            meta_data = {}
+
+        # 检测文件类型并处理 Markdown
+        processed_content = content
+        original_format = "text"
+
+        if filename:
+            import os
+            file_ext = os.path.splitext(filename)[1].lower()
+
+            if file_ext == '.md':
+                log.info("检测到 Markdown 文件，开始解析为纯文本...")
+                processed_content = self._parse_markdown_to_text(content)
+                original_format = "markdown"
+                log.info(f"Markdown 解析完成，原始长度: {len(content)}, 解析后长度: {len(processed_content)}")
+
+                # 在元数据中记录原始格式
+                meta_data['original_format'] = 'markdown'
+                meta_data['original_length'] = len(content)
+                meta_data['parsed_length'] = len(processed_content)
+            elif file_ext == '.txt':
+                original_format = "text"
+                meta_data['original_format'] = 'text'
+
         # 创建文档记录
         log.info("1/5: 创建文档记录...")
         document = KnowledgeDocument(
             title=title,
             filename=filename,
-            content=content,
+            content=processed_content,  # 使用处理后的内容
             file_type=file_type,
-            file_size=len(content.encode('utf-8')),
-            meta_data=meta_data or {},
+            file_size=len(processed_content.encode('utf-8')),
+            meta_data=meta_data,
         )
         session.add(document)
         await session.flush()
@@ -65,7 +135,7 @@ class KnowledgeBaseService:
         
         # 文档分块
         log.info("2/5: 文档分块...")
-        chunks = self._chunk_text(content, chunk_size, chunk_overlap)
+        chunks = self._chunk_text(processed_content, chunk_size, chunk_overlap)
         log.info(f"✓ 文档分成 {len(chunks)} 块")
         
         # 保存分块

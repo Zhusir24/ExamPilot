@@ -73,16 +73,33 @@ export default function KnowledgeBasePage() {
   const handleFileUpload = async () => {
     // 清除之前的验证错误
     setValidationError(null);
-    
+
     if (!selectedFile) {
       setValidationError('请选择要上传的文件');
+      return;
+    }
+
+    // 验证文件大小（10MB = 10 * 1024 * 1024 字节）
+    const MAX_FILE_SIZE = 10 * 1024 * 1024;
+    if (selectedFile.size > MAX_FILE_SIZE) {
+      setValidationError(`文件大小超出限制。最大允许: 10MB，当前文件: ${(selectedFile.size / 1024 / 1024).toFixed(2)}MB`);
+      return;
+    }
+
+    // 验证文件扩展名
+    const allowedExtensions = ['.txt', '.md'];
+    const fileName = selectedFile.name.toLowerCase();
+    const hasValidExtension = allowedExtensions.some(ext => fileName.endsWith(ext));
+
+    if (!hasValidExtension) {
+      setValidationError(`不支持的文件格式。仅支持: ${allowedExtensions.join(', ')}`);
       return;
     }
 
     try {
       setLoading(true);
       await knowledgeApi.uploadDocument(selectedFile);
-      
+
       // 成功后关闭对话框并刷新列表
       setUploadDialogOpen(false);
       setSelectedFile(null);
@@ -251,7 +268,7 @@ export default function KnowledgeBasePage() {
           )}
           <Box sx={{ mt: 2 }}>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
-              支持的格式：.txt, .md
+              支持的格式：.txt, .md（最大 10MB）
             </Typography>
             <input
               type="file"
@@ -261,6 +278,11 @@ export default function KnowledgeBasePage() {
                 setValidationError(null);
               }}
             />
+            {selectedFile && (
+              <Typography variant="caption" color="text.secondary" sx={{ mt: 1, display: 'block' }}>
+                已选择: {selectedFile.name} ({(selectedFile.size / 1024).toFixed(2)} KB)
+              </Typography>
+            )}
           </Box>
         </DialogContent>
         <DialogActions>

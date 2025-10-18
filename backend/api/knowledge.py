@@ -148,22 +148,55 @@ async def upload_document(
     kb_service: KnowledgeBaseService = Depends(get_knowledge_service),
 ):
     """上传文档文件到知识库"""
+    # 常量定义
+    MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+    ALLOWED_EXTENSIONS = {'.txt', '.md'}
+
     try:
-        # 读取文件内容
+        # 1. 验证文件名
+        if not file.filename:
+            raise HTTPException(status_code=400, detail="文件名不能为空")
+
+        # 2. 验证文件扩展名
+        import os
+        file_ext = os.path.splitext(file.filename)[1].lower()
+        if file_ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"不支持的文件格式。仅支持: {', '.join(ALLOWED_EXTENSIONS)}"
+            )
+
+        # 3. 读取文件内容
         content = await file.read()
-        text_content = content.decode('utf-8')
-        
-        # 添加到知识库
+
+        # 4. 验证文件大小
+        file_size = len(content)
+        if file_size > MAX_FILE_SIZE:
+            raise HTTPException(
+                status_code=400,
+                detail=f"文件大小超出限制。最大允许: {MAX_FILE_SIZE / 1024 / 1024:.0f}MB，当前文件: {file_size / 1024 / 1024:.2f}MB"
+            )
+
+        if file_size == 0:
+            raise HTTPException(status_code=400, detail="文件内容为空")
+
+        # 5. 解码文件内容
+        try:
+            text_content = content.decode('utf-8')
+        except UnicodeDecodeError:
+            raise HTTPException(status_code=400, detail="文件编码错误，请使用UTF-8编码的文件")
+
+        # 6. 添加到知识库
         document = await kb_service.add_document(
             session=db,
-            title=file.filename or "未命名文档",
+            title=file.filename,
             content=text_content,
             filename=file.filename,
             file_type=file.content_type,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
         )
-        
+
         return DocumentResponse(
             id=document.id,
             title=document.title,
@@ -173,12 +206,12 @@ async def upload_document(
             total_chunks=document.total_chunks,
             created_at=document.created_at.isoformat(),
         )
-        
-    except UnicodeDecodeError:
-        raise HTTPException(status_code=400, detail="文件编码错误，请使用UTF-8编码")
+
+    except HTTPException:
+        raise
     except Exception as e:
         log.error(f"上传文档失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"上传文档失败: {str(e)}")
 
 
 @router.get("/documents", response_model=List[DocumentResponse])
