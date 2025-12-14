@@ -10,6 +10,8 @@ ExamPilot 是一个功能强大的问卷自动答题系统，支持多种答题�
   - 全自动AI答题
   - 用户勾选AI介入题目
   - 预设答案自动填充
+- 🎬 **可视化答题模式**：实时观看AI答题过程，手动审核和提交 🆕
+- 🔐 **API密钥加密**：使用Fernet加密存储所有API密钥，确保数据安全 🆕
 - 🌐 **平台支持**：目前支持问卷星，可扩展其他平台
 - 📝 **题型支持**：支持10种题型（填空、单选、多选、判断、简答、矩阵填空、多项简答、下拉选择、多项填空、级联下拉）
 - ⏱️ **时间模拟**：人性化答题时间模拟（均匀/正态/分段停顿）
@@ -19,10 +21,11 @@ ExamPilot 是一个功能强大的问卷自动答题系统，支持多种答题�
 
 ### 后端
 - FastAPI - Web框架
-- Playwright - 浏览器自动化
+- Playwright - 浏览器自动化（支持Firefox和Chromium）
 - SQLite - 数据存储
 - Loguru - 日志管理
 - SQLAlchemy - ORM
+- Cryptography - API密钥加密（Fernet）
 
 ### 前端
 - React 18
@@ -182,6 +185,7 @@ exampilot/
 │   ├── core/               # 核心模块
 │   │   ├── config.py       # 配置管理
 │   │   ├── database.py     # 数据库连接
+│   │   ├── encryption.py   # 加密服务 🆕
 │   │   └── logger.py       # 日志配置
 │   ├── models/             # 数据模型
 │   │   ├── question.py     # 题目模型
@@ -194,6 +198,9 @@ exampilot/
 │   │   ├── answering_modes.py # 答题模式
 │   │   └── timing_simulator.py # 时间模拟
 │   ├── migrations/         # 数据库迁移
+│   ├── scripts/           # 维护脚本 🆕
+│   │   ├── migrate_encrypt_api_keys.py  # API密钥加密迁移
+│   │   └── fix_questionnaire_titles.py  # 问卷标题修复
 │   ├── main.py            # 主入口
 │   └── requirements.txt   # Python依赖
 ├── frontend/              # 前端代码
@@ -211,6 +218,7 @@ exampilot/
 │   └── tailwind.config.js # Tailwind配置
 ├── data/                 # 数据目录
 │   ├── database.db      # SQLite数据库
+│   ├── .encryption_key  # 加密密钥文件 🆕 ⚠️重要！
 │   └── logs/            # 日志文件
 ├── .venv/               # Python虚拟环境
 ├── .env                 # 环境变量
@@ -276,22 +284,69 @@ rm data/database.db
 # 重启服务会自动创建新数据库
 ```
 
+### 5. 可视化模式浏览器没有弹出
+
+检查设置和环境：
+```bash
+# 检查可视化模式是否启用
+curl http://localhost:8000/api/settings/visual_mode
+
+# 如果未启用，通过API启用
+curl -X PUT http://localhost:8000/api/settings/visual_mode \
+  -H "Content-Type: application/json" \
+  -d '{"key":"visual_mode","value":true,"value_type":"bool"}'
+
+# 确保在图形界面环境中运行（不支持纯SSH）
+```
+
+详细故障排除：[可视化答题模式文档](docs/features/visual_mode.md#-故障排除)
+
+### 6. API密钥加密迁移
+
+如果数据库中有明文API密钥，运行迁移脚本：
+```bash
+# 备份数据库
+cp data/exampilot.db data/exampilot.db.backup
+
+# 运行迁移脚本
+.venv/bin/python -m backend.scripts.migrate_encrypt_api_keys --yes
+
+# 备份加密密钥文件（⚠️ 极其重要！）
+cp data/.encryption_key ~/backup/encryption_key_$(date +%Y%m%d)
+```
+
+详细说明：[API密钥加密文档](docs/features/api_encryption.md)
+
 ## 注意事项
 
 1. **使用规范**：请确保使用本系统符合相关平台的服务条款
 2. **API限额**：注意LLM API的调用限额和费用
-3. **数据安全**：API密钥等敏感信息请妥善保管
+3. **数据安全**：
+   - API密钥已自动加密存储（Fernet加密）
+   - ⚠️ **重要**：立即备份 `data/.encryption_key` 文件！
+   - 丢失加密密钥将无法恢复已加密的API密钥
 4. **网络稳定**：答题过程需要稳定的网络连接
+5. **可视化模式**：
+   - 适合少量题目的问卷（< 50题）
+   - 需要图形界面环境（不支持纯命令行服务器）
+   - 可在系统设置中开启/关闭
 
 ## 版本历史
+
+### v2.1 (2025-11-07) 🆕
+- 🎬 **可视化答题模式**：实时观看AI答题，手动审核提交
+- 🔐 **API密钥加密**：Fernet加密存储，自动兼容明文
+- 🛡️ **增强错误处理**：详细的异常分类和友好的错误信息
+- 🤖 **LLM改进**：更健壮的JSON解析和响应处理
+- 🌐 **浏览器优化**：优先使用Firefox，避免macOS崩溃
+- 📚 详细更新日志：[docs/CHANGELOG.md](docs/CHANGELOG.md)
 
 ### v2.0 (2025-10-18) 🎉
 - ✅ **新增6种题型支持**：简答题、矩阵填空、多项简答、下拉选择、多项填空、级联下拉
 - ✅ **题型覆盖率100%**：可完整解析测试问卷的所有20道题目
 - ✅ **URL清理优化**：支持带锚点的URL（如 `#`）
 - ✅ **域名支持增强**：支持 wjx.com、wjx.cn 等多个问卷星域名
-- 📚 详细更新日志：[docs/CHANGELOG.md](docs/CHANGELOG.md)
-- 📖 题型使用指南：[docs/QUESTION_TYPES_GUIDE.md](docs/QUESTION_TYPES_GUIDE.md)
+- 📖 题型使用指南：[docs/guides/question_types.md](docs/guides/question_types.md)
 
 ### v1.0
 - ✅ 项目基础架构
@@ -305,17 +360,30 @@ rm data/database.db
 
 ## 开发计划
 
-- [ ] 更多平台支持（腾讯问卷、金数据等）
+### 近期计划 (v2.2)
 - [ ] 更多题型支持（排序题、矩阵单选/多选、量表题等）
-- [ ] 答题历史记录查询和导出
+- [ ] 可视化模式的高级配置（自定义延迟、窗口大小等）
+- [ ] 答题报告导出（PDF、Excel）
+
+### 中期计划 (v3.0)
+- [ ] 更多平台支持（腾讯问卷、金数据等）
 - [ ] 批量答题功能
+- [ ] 答题历史记录查询和分析
 - [ ] Docker部署支持
+
+### 长期计划
+- [ ] 多用户支持和权限管理
+- [ ] API接口开放
+- [ ] 插件系统
 
 ## 文档索引
 
-- 📖 **[题型使用指南](docs/QUESTION_TYPES_GUIDE.md)** - 所有10种题型的详细说明和答案格式
-- 📚 **[更新日志](docs/CHANGELOG.md)** - v2.0版本的完整更新记录
-- 🛠️ **[工具脚本](scripts/README.md)** - 维护和管理工具脚本说明
+- 📖 **[文档中心](docs/README.md)** - 完整文档导航和索引
+- 📖 **[题型使用指南](docs/guides/question_types.md)** - 所有10种题型的详细说明和答案格式
+- 🎬 **[可视化答题模式](docs/features/visual_mode.md)** - 实时观看AI答题全过程
+- 🔐 **[API密钥加密](docs/features/api_encryption.md)** - 密钥加密存储和迁移指南
+- 🛠️ **[迁移脚本指南](docs/scripts/migration_scripts.md)** - 数据迁移和维护脚本
+- 📚 **[更新日志](docs/CHANGELOG.md)** - 版本更新记录
 
 ## 常见问题
 

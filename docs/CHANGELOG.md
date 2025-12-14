@@ -1,13 +1,221 @@
-# ExamPilot v2.0 更新日志
+# ExamPilot 更新日志
 
-## 版本信息
+---
+
+## v2.1 (2025-11-07) 🆕
+
+### 版本信息
+- **版本号**: v2.1
+- **发布日期**: 2025-11-07
+- **重大更新**: 可视化答题模式、API密钥加密
+
+---
+
+### 🎉 主要更新
+
+#### 1. 🎬 可视化答题模式（新功能）
+
+**功能介绍**：
+- 实时观看AI答题的全过程
+- 浏览器窗口自动弹出（Firefox优先）
+- 慢动作播放（800ms延迟）
+- 答题完成后手动审核和提交
+- 浏览器保持打开10分钟
+
+**适用场景**：
+- 第一次使用ExamPilot
+- 重要问卷需要人工审核
+- 调试答题逻辑
+- 演示和教学
+
+**文档**：[可视化答题模式](./features/visual_mode.md)
+
+---
+
+#### 2. 🔐 API密钥加密（新功能）
+
+**功能介绍**：
+- 使用Fernet对称加密所有API密钥
+- 自动生成和管理加密密钥文件
+- 向后兼容明文密钥（自动降级）
+- 提供迁移脚本加密现有明文密钥
+
+**安全特性**：
+- 加密密钥文件权限设置为600
+- 数据库泄露时密钥无法直接读取
+- 符合安全规范和最佳实践
+
+**文档**：[API密钥加密](./features/api_encryption.md)
+
+---
+
+#### 3. 🛡️ 增强错误处理
+
+**改进内容**：
+- 详细的异常分类（ValueError、ConnectionError、TimeoutError、RuntimeError）
+- 友好的错误信息和建议
+- LLM API调用的详细错误日志
+- Embedding服务的超时和连接错误处理
+
+**涉及文件**：
+- `backend/api/knowledge.py` - 知识库API错误处理
+- `backend/services/llm_service.py` - LLM服务错误处理
+- `backend/services/knowledge_base.py` - 向量生成错误处理
+
+---
+
+#### 4. 🤖 LLM服务改进
+
+**新增功能**：
+- `_extract_json_from_text()` 方法：支持从各种格式中提取JSON
+  - 代码块中的JSON（\`\`\`json ... \`\`\`）
+  - 嵌套JSON对象
+  - 使用栈匹配大括号，确保完整性
+
+**改进内容**：
+- 更健壮的响应验证
+- 更好的降级处理
+- 详细的错误日志
+
+---
+
+#### 5. 🌐 问卷星平台优化
+
+**标题提取改进**：
+- 支持8种不同的CSS选择器
+- 从页面title标签降级提取
+- 更智能的标题识别和清理
+
+**浏览器引擎优化**：
+- 优先使用Firefox（避免macOS上Chromium崩溃）
+- Chromium回退时使用更稳定的启动参数
+- 可视化模式下的窗口大小和位置优化
+
+---
+
+### 📝 新增文件
+
+#### 核心功能
+- `backend/core/encryption.py` - 加密服务实现
+- `data/.encryption_key` - 加密密钥文件（自动生成，⚠️重要！）
+
+#### 迁移脚本
+- `backend/scripts/__init__.py` - 脚本模块初始化
+- `backend/scripts/migrate_encrypt_api_keys.py` - API密钥加密迁移
+- `backend/scripts/fix_questionnaire_titles.py` - 问卷标题修复
+
+#### 文档
+- `docs/features/visual_mode.md` - 可视化答题模式完整文档
+- `docs/features/api_encryption.md` - API密钥加密完整文档
+- `docs/scripts/migration_scripts.md` - 迁移脚本使用指南
+- `docs/guides/question_types.md` - 题型指南（从根目录移动）
+
+---
+
+### 🔄 修改的文件
+
+#### 后端API
+- `backend/api/llm.py` - 添加API密钥加密逻辑
+- `backend/api/knowledge.py` - 添加API密钥解密和错误处理
+- `backend/api/websocket.py` - 添加可视化模式支持和API密钥解密
+- `backend/api/settings.py` - 新增 `visual_mode` 配置项
+
+#### 服务层
+- `backend/services/llm_service.py` - 改进JSON解析和错误处理
+- `backend/services/knowledge_base.py` - 增强向量生成验证和错误处理
+- `backend/services/platforms/wenjuanxing.py` - 添加可视化模式和标题提取改进
+
+#### 前端
+- `frontend/src/pages/AnsweringProgressPage.tsx` - 添加可视化模式UI提示
+- `frontend/src/pages/SystemSettingsPage.tsx` - 添加可视化模式开关
+
+#### 依赖
+- `backend/requirements.txt` - 新增 `cryptography==42.0.0`
+
+#### 文档
+- `docs/README.md` - 重组文档结构，添加快速导航
+- `README.md` - 更新功能特性和版本历史
+
+---
+
+### ⚠️ 重要提醒
+
+#### API密钥加密迁移
+
+如果您的数据库中已有明文API密钥，请运行迁移脚本：
+
+```bash
+.venv/bin/python -m backend.scripts.migrate_encrypt_api_keys --yes
+```
+
+#### 备份加密密钥
+
+**极其重要**：立即备份 `data/.encryption_key` 文件！
+
+```bash
+cp data/.encryption_key ~/backup/encryption_key_$(date +%Y%m%d)
+```
+
+丢失此文件将无法解密已加密的API密钥！
+
+---
+
+### 🔧 兼容性
+
+#### 向后兼容
+- ✅ 完全兼容v2.0的所有功能
+- ✅ 自动兼容明文和密文API密钥
+- ✅ 可视化模式为可选功能，默认关闭
+
+#### 数据库
+- ❌ 不需要数据库结构迁移
+- ✅ 建议运行API密钥加密迁移脚本
+
+---
+
+### 📊 性能影响
+
+- 加密/解密开销：< 1ms（可忽略）
+- 可视化模式：慢动作播放，适合少量题目
+- 非可视化模式：性能无影响
+
+---
+
+### 🐛 已知问题
+
+#### macOS Chromium崩溃
+- **状态**：已修复
+- **解决方案**：优先使用Firefox
+
+#### 云服务器可视化模式
+- **限制**：需要GUI环境
+- **解决方案**：使用xvfb虚拟显示
+
+---
+
+### 📖 文档更新
+
+#### 新增文档
+1. **可视化答题模式** - 完整使用指南和故障排除
+2. **API密钥加密** - 安全原理和迁移步骤
+3. **迁移脚本指南** - 所有脚本的使用说明
+
+#### 更新文档
+1. **主README** - 添加新功能介绍
+2. **文档中心** - 重组结构，添加快速导航
+
+---
+
+## v2.0 (2025-10-18) 🎉
+
+### 版本信息
 - **版本号**: v2.0
 - **发布日期**: 2025-10-18
 - **重大更新**: 新增6种题型支持
 
 ---
 
-## 🎉 主要更新
+### 🎉 主要更新
 
 ### 新增题型支持
 
