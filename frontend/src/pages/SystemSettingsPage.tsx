@@ -124,6 +124,38 @@ export default function SystemSettingsPage() {
               }
               label="使用知识库辅助答题"
             />
+
+            <FormControlLabel
+              control={
+                <Switch
+                  checked={settings.visual_mode || false}
+                  onChange={(e) => updateSetting('visual_mode', e.target.checked)}
+                  color="secondary"
+                />
+              }
+              label="可视化答题模式（弹出浏览器窗口）"
+            />
+
+            {settings.visual_mode && (
+              <Alert severity="info" sx={{ mt: 1 }}>
+                <Typography variant="body2" gutterBottom>
+                  <strong>🎬 可视化模式说明：</strong>
+                </Typography>
+                <Typography variant="body2" component="div">
+                  <ul style={{ margin: '4px 0', paddingLeft: '20px' }}>
+                    <li>答题时会弹出真实的浏览器窗口</li>
+                    <li>您可以实时观看LLM填写答案的过程</li>
+                    <li>答题完成后<strong>不会自动提交</strong></li>
+                    <li>请在浏览器窗口中检查答案</li>
+                    <li>检查无误后，手动点击【提交】按钮</li>
+                    <li>浏览器将保持打开10分钟，方便您操作</li>
+                  </ul>
+                </Typography>
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                  ⚠️ 注意：可视化模式较慢，适合少量题目的问卷（&lt; 50题）
+                </Typography>
+              </Alert>
+            )}
           </Box>
         </CardContent>
       </Card>

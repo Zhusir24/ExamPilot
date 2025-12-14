@@ -252,6 +252,12 @@ DEFAULT_SETTINGS = {
         "description": "是否使用知识库辅助答题",
         "category": "answering",
     },
+    "visual_mode": {
+        "value": False,
+        "value_type": "bool",
+        "description": "可视化答题模式（弹出浏览器窗口，用户可见全过程）",
+        "category": "answering",
+    },
 }
 
 

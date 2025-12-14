@@ -23,6 +23,7 @@ from backend.services.answering_modes import AnsweringMode, ModeHandler
 from backend.services.timing_simulator import TimingSimulator, TimingStrategy, TimingProfile
 from backend.core.logger import log
 from backend.api.settings import deserialize_value
+from backend.core.encryption import encryption_service
 
 router = APIRouter()
 
@@ -180,6 +181,14 @@ async def handle_start_answering(session: AnsweringSession, data: dict):
             # 获取系统设置
             settings = await get_system_settings(db)
             confidence_threshold = settings.get("confidence_threshold", 0.7)
+            visual_mode = settings.get("visual_mode", False)  # 可视化模式
+
+            # 可视化模式提示
+            if visual_mode:
+                log.info("=" * 60)
+                log.info("🎬 可视化答题模式已启用")
+                log.info("📺 浏览器窗口即将弹出，您可以实时观看答题过程")
+                log.info("=" * 60)
             
             # 知识库配置：优先使用前端传递的配置，如果未启用则使用系统设置
             if knowledge_config and knowledge_config.get("enabled"):
@@ -362,22 +371,32 @@ async def handle_submit_answers(session: AnsweringSession, data: dict):
                 select(Questionnaire).where(Questionnaire.id == session.questionnaire_id)
             )
             questionnaire = result.scalar_one_or_none()
-            
+
             if not questionnaire:
                 await session.send_error("问卷不存在")
                 return
-            
+
+            # 获取系统设置
+            settings = await get_system_settings(db)
+            visual_mode = settings.get("visual_mode", False)
+
             # 获取平台适配器
             platform = get_platform(questionnaire.url)
-            
+
             # 准备答案数据
             answers_to_submit = {}
             for question_id, answer in session.answers.items():
                 answers_to_submit[question_id] = answer.content
-            
+
             # 提交答案
-            await session.send_message("submitting", {"message": "正在提交答案..."})
-            result = await platform.submit_answers(questionnaire.url, answers_to_submit)
+            if visual_mode:
+                await session.send_message("submitting", {
+                    "message": "可视化模式：正在浏览器中填写答案，请查看浏览器窗口..."
+                })
+            else:
+                await session.send_message("submitting", {"message": "正在提交答案..."})
+
+            result = await platform.submit_answers(questionnaire.url, answers_to_submit, visual_mode=visual_mode)
             
             # 更新数据库
             if result.get("success"):
@@ -420,17 +439,23 @@ async def get_active_llm_service(db: AsyncSession) -> Optional[LLMService]:
         .limit(1)
     )
     config = result.scalar_one_or_none()
-    
+
     if not config:
         log.warning("未找到激活的LLM配置")
         return None
-    
+
     if not config.api_key:
         log.warning(f"LLM配置 {config.name} 缺少API密钥")
         return None
-    
+
+    # 解密API密钥（兼容明文）
+    decrypted_api_key = encryption_service.decrypt(config.api_key)
+    if not decrypted_api_key:
+        log.error(f"LLM配置 {config.name} API密钥为空或处理失败")
+        return None
+
     return LLMService(
-        api_key=config.api_key,
+        api_key=decrypted_api_key,
         base_url=config.base_url,
         model=config.model,
         temperature=config.temperature,
@@ -446,12 +471,17 @@ async def get_active_embedding_service(db: AsyncSession) -> Optional[EmbeddingSe
         .limit(1)
     )
     config = result.scalar_one_or_none()
-    
+
     if not config:
         return None
-    
+
+    # 解密API密钥
+    decrypted_api_key = ""
+    if config.api_key:
+        decrypted_api_key = encryption_service.decrypt(config.api_key) or ""
+
     return EmbeddingService(
-        api_key=config.api_key or "",
+        api_key=decrypted_api_key,
         base_url=config.base_url,
         model=config.model,
     )
@@ -465,12 +495,17 @@ async def get_active_rerank_service(db: AsyncSession) -> Optional[RerankService]
         .limit(1)
     )
     config = result.scalar_one_or_none()
-    
+
     if not config:
         return None
-    
+
+    # 解密API密钥
+    decrypted_api_key = ""
+    if config.api_key:
+        decrypted_api_key = encryption_service.decrypt(config.api_key) or ""
+
     return RerankService(
-        api_key=config.api_key or "",
+        api_key=decrypted_api_key,
         base_url=config.base_url,
         model=config.model,
     )

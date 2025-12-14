@@ -413,46 +413,109 @@ class KnowledgeBaseService:
         if not chunks:
             log.info("没有分块需要生成向量")
             return
-        
+
         log.info(f"开始为 {len(chunks)} 个分块生成向量...")
-        
+
+        # 验证输入
+        if not self.embedding_service:
+            raise ValueError("Embedding服务未初始化")
+
         # 提取文本
-        texts = [chunk.content for chunk in chunks]
-        log.debug(f"分块内容示例: {texts[0][:100]}..." if texts else "无内容")
-        
+        try:
+            texts = [chunk.content for chunk in chunks]
+            if not texts:
+                raise ValueError("分块列表为空")
+
+            # 验证文本内容
+            for i, text in enumerate(texts):
+                if not text or not isinstance(text, str):
+                    raise ValueError(f"第{i+1}个分块内容无效: {text}")
+
+            log.debug(f"分块内容示例: {texts[0][:100]}..." if texts else "无内容")
+
+        except Exception as e:
+            log.error(f"❌ 提取分块文本失败: {e}")
+            raise ValueError(f"分块数据格式错误: {e}")
+
         # 批量生成向量
         try:
             log.info(f"调用Embedding服务批量生成向量...")
             embeddings = await self.embedding_service.embed_batch(texts)
+
+            # 验证返回的embeddings
+            if not embeddings:
+                raise ValueError("Embedding服务返回空结果")
+
+            if len(embeddings) != len(chunks):
+                raise ValueError(f"Embedding数量不匹配: 期望{len(chunks)}，实际{len(embeddings)}")
+
             log.info(f"Embedding服务返回 {len(embeddings)} 个向量")
-            
-            # 保存向量
-            log.info(f"开始保存向量到数据库...")
-            for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-                # 转换为numpy数组并序列化
-                vector_array = np.array(embedding, dtype=np.float32)
-                vector_bytes = vector_array.tobytes()
-                
-                vector_embedding = VectorEmbedding(
-                    chunk_id=chunk.id,
-                    embedding=vector_bytes,
-                    model_name=self.embedding_service.model,
-                    dimension=len(embedding),
-                )
-                session.add(vector_embedding)
-                
-                if (idx + 1) % 10 == 0:
-                    log.debug(f"已保存 {idx + 1}/{len(chunks)} 个向量")
-            
-            log.info(f"向量保存完成，开始flush到数据库...")
-            await session.flush()
-            log.info(f"✓ 成功生成并保存 {len(embeddings)} 个向量")
-            
+
+        except (TimeoutError, ConnectionError) as e:
+            log.error(f"❌ Embedding服务连接失败: {e}")
+            raise ConnectionError(f"无法连接到Embedding服务: {e}")
+
+        except ValueError as e:
+            log.error(f"❌ Embedding数据验证失败: {e}")
+            raise
+
         except Exception as e:
-            log.error(f"❌ 生成向量失败: {e}")
+            log.error(f"❌ 生成向量失败: {type(e).__name__}: {e}")
             import traceback
             log.error(f"错误堆栈: {traceback.format_exc()}")
+            raise RuntimeError(f"Embedding生成失败: {e}")
+
+        # 保存向量到数据库
+        try:
+            log.info(f"开始保存向量到数据库...")
+            saved_count = 0
+
+            for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                try:
+                    # 验证embedding
+                    if not embedding or not isinstance(embedding, list):
+                        log.warning(f"第{idx+1}个embedding格式无效，跳过")
+                        continue
+
+                    # 转换为numpy数组并序列化
+                    vector_array = np.array(embedding, dtype=np.float32)
+                    vector_bytes = vector_array.tobytes()
+
+                    vector_embedding = VectorEmbedding(
+                        chunk_id=chunk.id,
+                        embedding=vector_bytes,
+                        model_name=self.embedding_service.model,
+                        dimension=len(embedding),
+                    )
+                    session.add(vector_embedding)
+                    saved_count += 1
+
+                    if (saved_count) % 10 == 0:
+                        log.debug(f"已保存 {saved_count}/{len(chunks)} 个向量")
+
+                except Exception as item_error:
+                    log.warning(f"保存第{idx+1}个向量失败: {item_error}, 继续处理下一个")
+                    continue
+
+            if saved_count == 0:
+                raise ValueError("没有成功保存任何向量")
+
+            log.info(f"向量保存完成，开始flush到数据库...")
+            await session.flush()
+            log.info(f"✓ 成功生成并保存 {saved_count}/{len(chunks)} 个向量")
+
+            if saved_count < len(chunks):
+                log.warning(f"⚠️ 有 {len(chunks) - saved_count} 个向量保存失败")
+
+        except ValueError as e:
+            log.error(f"❌ 向量保存验证失败: {e}")
             raise
+
+        except Exception as e:
+            log.error(f"❌ 保存向量到数据库失败: {type(e).__name__}: {e}")
+            import traceback
+            log.error(f"错误堆栈: {traceback.format_exc()}")
+            raise RuntimeError(f"数据库保存失败: {e}")
     
     async def search(
         self,

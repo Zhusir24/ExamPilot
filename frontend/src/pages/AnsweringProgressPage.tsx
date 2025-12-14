@@ -21,8 +21,10 @@ import {
 } from '@mui/material';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import LibraryBooksIcon from '@mui/icons-material/LibraryBooks';
+import VisibilityIcon from '@mui/icons-material/Visibility';
 import { appState, updateAnswer, updateAnsweringProgress, setAnswering } from '@/store';
 import { answeringWs } from '@/utils/websocket';
+import { settingsApi } from '@/api';
 
 export default function AnsweringProgressPage() {
   const snap = useSnapshot(appState);
@@ -30,7 +32,27 @@ export default function AnsweringProgressPage() {
   const [status, setStatus] = useState<'connecting' | 'answering' | 'completed' | 'error'>('connecting');
   const [statusMessage, setStatusMessage] = useState('正在连接...');
   const [submitResult, setSubmitResult] = useState<any>(null);
+  const [visualMode, setVisualMode] = useState(false);
   const hasStartedRef = useRef(false);
+  const visualModeRef = useRef(false);
+
+  // 加载可视化模式设置
+  useEffect(() => {
+    const loadVisualMode = async () => {
+      try {
+        const data = await settingsApi.getAll();
+        const visualModeSetting = data.find((s) => s.key === 'visual_mode');
+        if (visualModeSetting) {
+          const isVisual = visualModeSetting.value === true || visualModeSetting.value === 'true';
+          setVisualMode(isVisual);
+          visualModeRef.current = isVisual;
+        }
+      } catch (err) {
+        console.error('加载可视化模式设置失败:', err);
+      }
+    };
+    loadVisualMode();
+  }, []);
 
   useEffect(() => {
     if (!snap.questionnaire) {
@@ -77,6 +99,15 @@ export default function AnsweringProgressPage() {
     answeringWs.on('complete', () => {
       setStatus('completed');
       setStatusMessage('答题完成！');
+
+      // 可视化模式下自动触发提交（这样浏览器窗口才会弹出）
+      if (visualModeRef.current) {
+        console.log('可视化模式：自动触发提交以打开浏览器窗口');
+        setTimeout(() => {
+          answeringWs.submitAnswers();
+          setStatusMessage('正在浏览器窗口中填写答案...');
+        }, 1000); // 延迟1秒，让用户看到完成提示
+      }
     });
 
     answeringWs.on('error', (data) => {
@@ -113,7 +144,28 @@ export default function AnsweringProgressPage() {
           <Typography variant="body2" color="text.secondary" gutterBottom>
             {statusMessage}
           </Typography>
-          
+
+          {visualMode && status !== 'error' && (
+            <Alert
+              severity="info"
+              icon={<VisibilityIcon />}
+              sx={{ mt: 2 }}
+            >
+              <Typography variant="body2" gutterBottom>
+                <strong>🎬 可视化模式运行中</strong>
+              </Typography>
+              <Typography variant="body2" component="div">
+                <ul style={{ margin: '4px 0', paddingLeft: '20px' }}>
+                  <li>浏览器窗口已弹出，您可以实时观看答题过程</li>
+                  <li>答题完成后<strong>不会自动提交</strong></li>
+                  <li>请在浏览器窗口中检查答案</li>
+                  <li>确认无误后，手动点击【提交】按钮</li>
+                  <li>浏览器将保持打开10分钟供您操作</li>
+                </ul>
+              </Typography>
+            </Alert>
+          )}
+
           {status === 'answering' && (
             <Box sx={{ mt: 2 }}>
               <LinearProgress variant="determinate" value={progress} />
@@ -136,6 +188,28 @@ export default function AnsweringProgressPage() {
                   (a: any) => a.status === '失败' || a.status === 'FAILED'
                 ).length;
                 const totalCount = Object.keys(snap.answers).length;
+
+                // 可视化模式下的特殊提示
+                if (visualMode) {
+                  return (
+                    <Alert severity="info" sx={{ mb: 2 }}>
+                      <Typography variant="body2" gutterBottom>
+                        <strong>🎬 正在浏览器窗口中填写答案...</strong>
+                      </Typography>
+                      <Typography variant="body2">
+                        浏览器窗口已自动弹出，AI正在实时填写答案中。
+                      </Typography>
+                      <Typography variant="body2" sx={{ mt: 1 }}>
+                        填写完成后，请在浏览器窗口中检查答案，确认无误后点击问卷页面的【提交】按钮。
+                      </Typography>
+                      {failedCount > 0 && (
+                        <Typography variant="body2" color="warning.main" sx={{ mt: 1 }}>
+                          ⚠️ 注意：有 {failedCount}/{totalCount} 个答案可能存在问题，请仔细检查。
+                        </Typography>
+                      )}
+                    </Alert>
+                  );
+                }
 
                 return failedCount > 0 ? (
                   <>

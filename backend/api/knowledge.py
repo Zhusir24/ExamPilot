@@ -9,6 +9,7 @@ from backend.services.knowledge_base import KnowledgeBaseService
 from backend.services.llm_service import EmbeddingService, RerankService
 from backend.models.schema import LLMConfig
 from backend.core.logger import log
+from backend.core.encryption import encryption_service
 
 router = APIRouter(prefix="/api/knowledge", tags=["知识库"])
 
@@ -83,8 +84,13 @@ async def get_knowledge_service(db: AsyncSession = Depends(get_db), require_embe
     # 创建embedding服务(如果有配置)
     embedding_service = None
     if embedding_config:
+        # 解密API密钥
+        decrypted_api_key = ""
+        if embedding_config.api_key:
+            decrypted_api_key = encryption_service.decrypt(embedding_config.api_key) or ""
+
         embedding_service = EmbeddingService(
-            api_key=embedding_config.api_key or "",
+            api_key=decrypted_api_key,
             base_url=embedding_config.base_url,
             model=embedding_config.model,
         )
@@ -99,8 +105,13 @@ async def get_knowledge_service(db: AsyncSession = Depends(get_db), require_embe
 
     rerank_service = None
     if rerank_config:
+        # 解密API密钥
+        decrypted_rerank_key = ""
+        if rerank_config.api_key:
+            decrypted_rerank_key = encryption_service.decrypt(rerank_config.api_key) or ""
+
         rerank_service = RerankService(
-            api_key=rerank_config.api_key or "",
+            api_key=decrypted_rerank_key,
             base_url=rerank_config.base_url,
             model=rerank_config.model,
         )
@@ -123,7 +134,7 @@ async def add_document(
             chunk_size=request.chunk_size,
             chunk_overlap=request.chunk_overlap,
         )
-        
+
         return DocumentResponse(
             id=document.id,
             title=document.title,
@@ -133,10 +144,26 @@ async def add_document(
             total_chunks=document.total_chunks,
             created_at=document.created_at.isoformat(),
         )
-        
+
+    except ValueError as e:
+        log.error(f"添加文档失败 (参数错误): {e}")
+        raise HTTPException(status_code=400, detail=f"参数错误: {str(e)}")
+
+    except ConnectionError as e:
+        log.error(f"添加文档失败 (Embedding服务连接失败): {e}")
+        raise HTTPException(status_code=503, detail=f"Embedding服务不可用: {str(e)}")
+
+    except TimeoutError as e:
+        log.error(f"添加文档失败 (Embedding服务超时): {e}")
+        raise HTTPException(status_code=504, detail=f"Embedding服务超时: {str(e)}")
+
+    except RuntimeError as e:
+        log.error(f"添加文档失败 (运行时错误): {e}")
+        raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
+
     except Exception as e:
-        log.error(f"添加文档失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        log.error(f"添加文档失败 (未知错误): {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"内部服务器错误: {str(e)}")
 
 
 @router.post("/documents/upload", response_model=DocumentResponse)
@@ -208,10 +235,28 @@ async def upload_document(
         )
 
     except HTTPException:
+        # 重新抛出已经格式化的HTTP异常
         raise
+
+    except ValueError as e:
+        log.error(f"上传文档失败 (参数错误): {e}")
+        raise HTTPException(status_code=400, detail=f"参数错误: {str(e)}")
+
+    except ConnectionError as e:
+        log.error(f"上传文档失败 (Embedding服务连接失败): {e}")
+        raise HTTPException(status_code=503, detail=f"Embedding服务不可用: {str(e)}")
+
+    except TimeoutError as e:
+        log.error(f"上传文档失败 (Embedding服务超时): {e}")
+        raise HTTPException(status_code=504, detail=f"Embedding服务超时: {str(e)}")
+
+    except RuntimeError as e:
+        log.error(f"上传文档失败 (运行时错误): {e}")
+        raise HTTPException(status_code=500, detail=f"处理失败: {str(e)}")
+
     except Exception as e:
-        log.error(f"上传文档失败: {e}")
-        raise HTTPException(status_code=500, detail=f"上传文档失败: {str(e)}")
+        log.error(f"上传文档失败 (未知错误): {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"内部服务器错误: {str(e)}")
 
 
 @router.get("/documents", response_model=List[DocumentResponse])
@@ -337,13 +382,25 @@ async def search_knowledge(
             score_threshold=request.score_threshold,
             use_rerank=request.use_rerank,
         )
-        
+
         return [
             SearchResultItem(**result)
             for result in results
         ]
-        
+
+    except ValueError as e:
+        log.error(f"搜索知识库失败 (参数错误): {e}")
+        raise HTTPException(status_code=400, detail=f"参数错误: {str(e)}")
+
+    except ConnectionError as e:
+        log.error(f"搜索知识库失败 (服务连接失败): {e}")
+        raise HTTPException(status_code=503, detail=f"服务不可用: {str(e)}")
+
+    except TimeoutError as e:
+        log.error(f"搜索知识库失败 (服务超时): {e}")
+        raise HTTPException(status_code=504, detail=f"服务超时: {str(e)}")
+
     except Exception as e:
-        log.error(f"搜索知识库失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        log.error(f"搜索知识库失败 (未知错误): {type(e).__name__}: {e}")
+        raise HTTPException(status_code=500, detail=f"内部服务器错误: {str(e)}")
 

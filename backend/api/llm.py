@@ -7,6 +7,7 @@ from typing import Optional, List
 from backend.core.database import get_db
 from backend.models.schema import LLMConfig
 from backend.core.logger import log
+from backend.core.encryption import encryption_service
 
 router = APIRouter(prefix="/api/llm", tags=["LLM配置"])
 
@@ -106,11 +107,19 @@ async def create_llm_config(
                     detail=f"{request.config_type}类型已存在激活的配置: {existing_active.name}。每种类型只能有一个激活配置,请先停用现有配置或将此配置设为未激活状态。"
                 )
 
+        # 加密API密钥
+        encrypted_api_key = None
+        if request.api_key:
+            encrypted_api_key = encryption_service.encrypt(request.api_key)
+            if encrypted_api_key is None:
+                raise HTTPException(status_code=500, detail="API密钥加密失败")
+            log.info(f"API密钥已加密存储")
+
         # 创建配置
         config = LLMConfig(
             name=request.name,
             provider=request.provider,
-            api_key=request.api_key,
+            api_key=encrypted_api_key,  # 存储加密后的密钥
             base_url=request.base_url,
             model=request.model,
             temperature=request.temperature,
@@ -182,8 +191,15 @@ async def update_llm_config(
     # 更新字段
     config.name = request.name
     config.provider = request.provider
+
+    # 如果提供了新的API密钥，加密后更新
     if request.api_key:
-        config.api_key = request.api_key
+        encrypted_api_key = encryption_service.encrypt(request.api_key)
+        if encrypted_api_key is None:
+            raise HTTPException(status_code=500, detail="API密钥加密失败")
+        config.api_key = encrypted_api_key
+        log.info(f"API密钥已更新并加密")
+
     config.base_url = request.base_url
     config.model = request.model
     config.temperature = request.temperature

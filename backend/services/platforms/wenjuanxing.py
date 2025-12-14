@@ -21,16 +21,33 @@ class WenjuanxingPlatform(BasePlatform):
         # 移除尾部空格
         return clean_url
 
-    async def parse_url(self, url: str) -> Dict[str, Any]:
+    async def parse_url(self, url: str, visual_mode: bool = False) -> Dict[str, Any]:
         """解析问卷URL"""
         url = self._clean_url(url)
         if not await self.validate_url(url):
             raise ValueError("无效的URL")
-        
+
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            # 可视化模式：显示浏览器窗口
+            # 使用 Firefox 以避免 macOS 上 Chromium 的崩溃问题
+            try:
+                browser = await p.firefox.launch(
+                    headless=not visual_mode,
+                    slow_mo=500 if visual_mode else None,
+                )
+            except Exception:
+                browser = await p.chromium.launch(
+                    headless=not visual_mode,
+                    slow_mo=500 if visual_mode else None,
+                    args=['--disable-dev-shm-usage', '--disable-gpu', '--no-sandbox']
+                )
             try:
                 page = await browser.new_page()
+
+                # 设置窗口大小（可视化模式下更大）
+                if visual_mode:
+                    await page.set_viewport_size({"width": 1400, "height": 900})
+
                 await page.goto(url, wait_until="networkidle", timeout=30000)
                 
                 # 获取问卷标题
@@ -54,13 +71,30 @@ class WenjuanxingPlatform(BasePlatform):
             finally:
                 await browser.close()
     
-    async def extract_questions(self, url: str) -> tuple[List[Question], Dict[str, Any]]:
+    async def extract_questions(self, url: str, visual_mode: bool = False) -> tuple[List[Question], Dict[str, Any]]:
         """提取题目列表"""
         url = self._clean_url(url)
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            # 可视化模式：显示浏览器窗口
+            # 使用 Firefox 以避免 macOS 上 Chromium 的崩溃问题
+            try:
+                browser = await p.firefox.launch(
+                    headless=not visual_mode,
+                    slow_mo=500 if visual_mode else None,
+                )
+            except Exception:
+                browser = await p.chromium.launch(
+                    headless=not visual_mode,
+                    slow_mo=500 if visual_mode else None,
+                    args=['--disable-dev-shm-usage', '--disable-gpu', '--no-sandbox']
+                )
             try:
                 page = await browser.new_page()
+
+                # 设置窗口大小
+                if visual_mode:
+                    await page.set_viewport_size({"width": 1400, "height": 900})
+
                 await page.goto(url, wait_until="networkidle", timeout=30000)
                 
                 # 等待题目加载
@@ -82,13 +116,40 @@ class WenjuanxingPlatform(BasePlatform):
             finally:
                 await browser.close()
     
-    async def submit_answers(self, url: str, answers: Dict[str, Any]) -> Dict[str, Any]:
+    async def submit_answers(self, url: str, answers: Dict[str, Any], visual_mode: bool = False) -> Dict[str, Any]:
         """提交答案"""
         url = self._clean_url(url)
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            # 可视化模式：显示浏览器窗口，慢动作
+            # 使用 Firefox 以避免 macOS 上 Chromium 的崩溃问题
+            try:
+                browser = await p.firefox.launch(
+                    headless=not visual_mode,
+                    slow_mo=800 if visual_mode else None,  # 可视化模式更慢，方便用户观看
+                )
+                log.info("使用 Firefox 浏览器")
+            except Exception as firefox_error:
+                # 如果 Firefox 不可用，回退到 Chromium（使用更稳定的参数）
+                log.warning(f"Firefox 启动失败: {firefox_error}，尝试使用 Chromium")
+                browser = await p.chromium.launch(
+                    headless=not visual_mode,
+                    slow_mo=800 if visual_mode else None,
+                    args=[
+                        '--disable-dev-shm-usage',
+                        '--disable-blink-features=AutomationControlled',
+                        '--disable-gpu',
+                        '--no-sandbox',
+                        '--disable-setuid-sandbox',
+                    ]
+                )
             try:
                 page = await browser.new_page()
+
+                # 设置窗口大小和位置
+                if visual_mode:
+                    await page.set_viewport_size({"width": 1400, "height": 900})
+                    log.info("🌐 可视化模式：浏览器窗口已打开")
+
                 await page.goto(url, wait_until="networkidle", timeout=30000)
                 
                 # 等待页面加载
@@ -100,9 +161,34 @@ class WenjuanxingPlatform(BasePlatform):
                     processed_answer = self._preprocess_answer(answer_content)
                     if processed_answer is not None:
                         await self._fill_answer(page, question_id, processed_answer)
+                        if visual_mode:
+                            log.info(f"✓ 可视化模式：已填写 {question_id}")
                     else:
                         log.warning(f"跳过无效答案: {question_id} = {answer_content}")
-                
+
+                # 可视化模式：不自动提交，让用户手动操作
+                if visual_mode:
+                    log.info("=" * 60)
+                    log.info("✅ 可视化模式：所有答案已填写完毕！")
+                    log.info("📌 请在浏览器窗口中检查答案")
+                    log.info("📌 检查无误后，请手动点击【提交】按钮")
+                    log.info("📌 浏览器窗口将保持打开，方便您操作")
+                    log.info("=" * 60)
+
+                    # 等待用户操作（保持浏览器打开10分钟）
+                    import asyncio
+                    log.info("⏰ 浏览器将保持打开10分钟，供您检查和提交...")
+                    await asyncio.sleep(600)  # 10分钟 = 600秒
+
+                    # 返回成功状态，但标记为未提交
+                    return {
+                        "success": True,
+                        "message": "答案填写完成，等待用户手动提交",
+                        "visual_mode": True,
+                        "auto_submitted": False,
+                    }
+
+                # 非可视化模式：自动提交表单
                 # 提交表单 - 问卷星使用div作为提交按钮
                 submit_button = None
                 possible_selectors = [
@@ -201,12 +287,44 @@ class WenjuanxingPlatform(BasePlatform):
     
     async def _extract_title(self, page: Page) -> str:
         """提取问卷标题"""
+        # 尝试多种选择器匹配问卷星的不同页面结构
+        selectors = [
+            ".surveyhead h1",           # 标准问卷星样式
+            ".survey-title",            # 备选样式
+            "h1.title",                 # 标题class
+            ".jqTitle",                 # 问卷星特定class
+            "div.title h1",             # div包裹的标题
+            "#divTitle h1",             # ID选择器
+            "h1",                       # 通用h1标签
+            ".topicTitle",              # 题目标题区域
+        ]
+
+        for selector in selectors:
+            try:
+                title_elem = page.locator(selector).first
+                if await title_elem.count() > 0:
+                    title_text = await title_elem.inner_text()
+                    title_text = title_text.strip()
+                    if title_text and len(title_text) > 0:
+                        log.info(f"成功提取问卷标题: {title_text} (使用选择器: {selector})")
+                        return title_text
+            except Exception as e:
+                log.debug(f"选择器 {selector} 提取标题失败: {e}")
+                continue
+
+        # 如果所有选择器都失败，尝试从页面title标签提取
         try:
-            title_elem = page.locator(".surveyhead h1, .survey-title, h1.title")
-            if await title_elem.count() > 0:
-                return await title_elem.first.inner_text()
-        except:
-            pass
+            page_title = await page.title()
+            if page_title and "问卷星" not in page_title:
+                # 清理页面标题（移除网站名称等）
+                clean_title = page_title.split('-')[0].split('_')[0].strip()
+                if clean_title:
+                    log.info(f"从页面title提取问卷标题: {clean_title}")
+                    return clean_title
+        except Exception as e:
+            log.debug(f"从页面title提取标题失败: {e}")
+
+        log.warning("无法提取问卷标题，使用默认值")
         return "未命名问卷"
     
     async def _extract_description(self, page: Page) -> str:

@@ -33,3 +33,6 @@ pydantic-settings==2.1.0
 # 工具
 python-dotenv==1.0.0
 
+# 加密
+cryptography==42.0.0
+
